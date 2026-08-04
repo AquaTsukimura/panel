@@ -86,30 +86,85 @@
     *************************************************************************************************
 ]]
 
+local function fixEnv()
+   _ENV = _ENV or {}
+   _G = _G or {}
+   if #_ENV <= 0 and #_G > 0 then
+      _ENV = _G
+   end
+   if #_G <= 0 and #_ENV > 0 then
+      _G = _ENV
+   end
+end
+fixEnv()
+
 local function getname(func)
     local info = debug.getinfo(func, "n")
     local name = info and info.name
-    if not name then
+    if not name or name == "" then
         return "<anonymous>"
     end
     return name
 end
 
-function export_type(fn, paramtype)
-    if type(fn) == "function" and type(paramtype) == "table" then
-        local old_fn = fn
-        fn = function(...)
-            local args = {...}
-            for i, arg in ipairs(args) do
-                local kind = paramtype[i]
-                if kind ~= nil and type(arg) ~= kind then
-                    error("ExportTypeLua: Received unknown arguments to function '" .. getname(old_fn) .. "'. Expected " .. kind .. " but got " .. type(arg))
-                end
-            end
-            return old_fn(...)
-        end
-        return fn
-    else
+function fexport_type(fn, paramtype)
+    if type(fn) ~= "function" or type(paramtype) ~= "table" then
         error("ExportTypeLua: Invalid arguments to export_type")
     end
+
+    local inferred_name = getname(fn)
+
+    local wrapper = function(...)
+        local args = {...}
+        for i, kind in ipairs(paramtype) do
+            local arg = args[i]
+            if type(arg) ~= kind then
+                error("ExportTypeLua: Received unknown arguments to function '" .. inferred_name .. "'. Expected " .. kind .. " but got " .. type(arg), 2)
+            end
+        end
+        return fn(...)
+    end
+
+    local i = 1
+    while true do
+        local name, val = debug.getlocal(2, i)
+        if not name then break end
+        if val == fn then
+            debug.setlocal(2, i, wrapper)
+            if inferred_name == "<anonymous>" and not name:find("^%(") then
+                inferred_name = name
+            end
+        end
+        i = i + 1
+    end
+
+    local caller_info = debug.getinfo(2, "f")
+    if caller_info and caller_info.func then
+        local u_idx = 1
+        while true do
+            local name, val = debug.getupvalue(caller_info.func, u_idx)
+            if not name then break end
+            if val == fn then
+                debug.setupvalue(caller_info.func, u_idx, wrapper)
+                if inferred_name == "<anonymous>" then
+                    inferred_name = name
+                end
+            end
+            u_idx = u_idx + 1
+        end
+    end
+
+    local env = _ENV or _G
+    if env then
+        for k, v in pairs(env) do
+            if v == fn then
+                env[k] = wrapper
+                if inferred_name == "<anonymous>" then
+                    inferred_name = k
+                end
+            end
+        end
+    end
+
+    return wrapper
 end
